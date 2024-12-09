@@ -1,0 +1,125 @@
+% Directory containing the files
+dataDir = 'C:\Users\ASUS\Documents\Computer Science @Plymuni . NSBM\3rd Year\AI and ML\Coursework\New folder';
+
+% Load all .mat files
+files = dir(fullfile(dataDir, '*.mat'));
+
+% Initialize variables for categories
+categories = {'TimeD_FDay', 'TimeD_MDay', 'FreqD_FDay', 'FreqD_MDay', ...
+              'TimeD_FreqD_FDay', 'TimeD_FreqD_MDay'};
+user_categories = struct();
+
+for c = 1:length(categories)
+    user_categories.(categories{c}) = {};
+end
+
+% Separate files into categories based on naming
+for i = 1:length(files)
+    filePath = fullfile(files(i).folder, files(i).name);
+    disp(['Processing file: ', files(i).name]); % Debugging: Print filename
+
+    for c = 1:length(categories)
+        if contains(files(i).name, categories{c})
+            disp(['Matched category: ', categories{c}]); % Debugging: Category match
+            
+            try
+                % Load the file and verify its structure
+                data = load(filePath);
+                field_names = fieldnames(data); % List all fields in the .mat file
+                disp(['Fields in file: ', strjoin(field_names, ', ')]);
+                
+                % Dynamically access the first field as features
+                features = data.(field_names{1});
+                if isempty(features) || ~isnumeric(features)
+                    warning(['Invalid features in file: ', files(i).name]);
+                    continue;
+                end
+
+                % Extract user ID from filename
+                user_id_str = extractBetween(files(i).name, 'U', '_');
+                if isempty(user_id_str)
+                    warning(['Unable to extract user ID from file: ', files(i).name]);
+                    continue;
+                end
+                user_id = str2double(user_id_str{1});
+                if isnan(user_id)
+                    warning(['Invalid user ID in file: ', files(i).name]);
+                    continue;
+                end
+                
+                % Append data to the category
+                user_categories.(categories{c}){end+1} = struct( ...
+                    'features', features, ...
+                    'user', user_id, ...
+                    'feature_count', size(features, 2)); % Store user ID, features, and feature count
+            catch ME
+                warning(['Error processing file ', files(i).name, ': ', ME.message]);
+                continue;
+            end
+        end
+    end
+end
+
+% Calculate inter-user variance for each category and feature count group
+for c = 1:length(categories)
+    category = categories{c};
+    disp(['Processing category: ', category]);
+    category_data = user_categories.(category);
+    
+    if isempty(category_data)
+        warning(['No data found for category: ', category]);
+        continue;
+    end
+    
+    % Group data by feature count
+    feature_counts = cellfun(@(x) x.feature_count, category_data);
+    unique_feature_counts = unique(feature_counts);
+    
+    for f = 1:length(unique_feature_counts)
+        count = unique_feature_counts(f);
+        disp(['Processing group with ', num2str(count), ' features']);
+        
+        % Filter data for this feature count group
+        group_data = category_data(feature_counts == count);
+        
+        % Collect means for each user
+        user_means = [];
+        unique_users = unique(cellfun(@(x) x.user, group_data));
+        
+        for u = 1:length(unique_users)
+            user_id = unique_users(u);
+            
+            % Combine features for this user
+            user_features = [];
+            for j = 1:length(group_data)
+                if group_data{j}.user == user_id
+                    user_features = [user_features; group_data{j}.features];
+                end
+            end
+            
+            % Check if user has valid data
+            if isempty(user_features)
+                warning(['No valid data for user ', num2str(user_id), ' in category ', category]);
+                continue;
+            end
+            
+            % Calculate mean for this user
+            user_means = [user_means; mean(user_features, 1)]; % Mean of features for this user
+        end
+        
+        % Calculate inter-user variance across users for each feature
+        inter_user_variance = var(user_means, 0, 1); % Variance of user means
+        
+        % Display results
+        disp(['Inter-User Variance for ', category, ' with ', num2str(count), ' features:']);
+        disp(inter_user_variance);
+        
+        % Optional: Visualize inter-user variance
+        figure;
+        bar(inter_user_variance);
+        title(['Inter-User Variance for ', category, ' (', num2str(count), ' features)']);
+        xlabel('Feature Index');
+        ylabel('Variance');
+        grid on;
+    end
+end
