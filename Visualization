@@ -1,0 +1,136 @@
+% Initialize containers for overall statistics
+overall_accuracy = [];
+EERs = [];
+AUCs = [];
+
+for user_id = 1:10
+    fprintf('\nProcessing for User %02d...\n', user_id);
+    
+    % Load data for the specific user (checking user)
+    U01 = [Acc_TD_Data_Day1{user_id}; Acc_TD_Data_Day2{user_id}];
+    num_samples = size(U01, 1);
+    
+    % Split checking user data into 75% training and 25% testing
+    train_size_checking = round(0.75 * num_samples); 
+    test_size_checking = num_samples - train_size_checking;
+    rng(42); % For reproducibility
+    indices_checking = randperm(num_samples);
+    checking_user_train = U01(indices_checking(1:train_size_checking), :);
+    checking_user_test = U01(indices_checking(train_size_checking+1:end), :);
+    
+    % Initialize non-checking users' combined data
+    non_checking_train = [];
+    non_checking_test = [];
+    
+    % Process non-checking users
+    for nc = 1:10
+        if nc ~= user_id
+            user_data = [Acc_TD_Data_Day1{nc}; Acc_TD_Data_Day2{nc}];
+            num_samples_user = size(user_data, 1);
+            
+            train_size_user = round(0.75 * num_samples_user); 
+            rng(42 + nc); % Ensure reproducibility
+            indices_user = randperm(num_samples_user);
+            non_checking_train = [non_checking_train; user_data(indices_user(1:train_size_user), :)];
+            non_checking_test = [non_checking_test; user_data(indices_user(train_size_user+1:end), :)];
+        end
+    end
+    
+    % Randomly select training and testing samples from non-checking users
+    rng(42);
+    indices_train = randperm(size(non_checking_train, 1), train_size_checking); 
+    selected_non_checking_train = non_checking_train(indices_train, :);
+    rng(42);
+    indices_test = randperm(size(non_checking_test, 1), test_size_checking); 
+    selected_non_checking_test = non_checking_test(indices_test, :);
+    
+    % Combine training dataset
+    Training_Data = [checking_user_train; selected_non_checking_train];
+    Training_Labels = [ones(size(checking_user_train, 1), 1); zeros(size(selected_non_checking_train, 1), 1)];
+    
+    % Combine testing dataset
+    Testing_Data = [checking_user_test; selected_non_checking_test];
+    Testing_Labels = [ones(size(checking_user_test, 1), 1); zeros(size(selected_non_checking_test, 1), 1)];
+    
+    % Adjust labels for dummyvar compatibility
+    Adjusted_Training_Labels = Training_Labels + 1;
+    Adjusted_Testing_Labels = Testing_Labels + 1;
+    
+    % Convert labels to one-hot encoding
+    Training_Labels_OneHot = dummyvar(Adjusted_Training_Labels);
+    
+    % Define the neural network
+    hiddenLayerSize = 10;
+    net = feedforwardnet(hiddenLayerSize);
+    net.trainParam.epochs = 1000;  % Maximum number of epochs
+    net.trainParam.goal = 1e-4;    % Performance goal
+    net.trainParam.max_fail = 6;   % Maximum validation failures
+    net.trainParam.lr = 0.01;      % Learning rate
+    
+    % Train the neural network
+    net = train(net, Training_Data', Training_Labels_OneHot');
+    
+    % Get predictions on testing data
+    predictions = net(Testing_Data');
+    
+    % Convert predictions from one-hot encoding to class labels
+    [~, predicted_labels] = max(predictions, [], 1);
+    predicted_labels = predicted_labels - 1; 
+    
+    % Calculate accuracy
+    accuracy = sum(predicted_labels' == Testing_Labels) / length(Testing_Labels) * 100;
+    overall_accuracy = [overall_accuracy; accuracy];
+    fprintf('Accuracy for User %02d: %.2f%%\n', user_id, accuracy);
+    
+    % 1. Confusion Matrix
+    figure;
+    plotconfusion(dummyvar(Testing_Labels + 1)', predictions);
+    title(sprintf('Confusion Matrix for User %02d', user_id));
+    
+    % 2. ROC Curve
+    thresholds = linspace(0, 1, 100); % Define thresholds
+    TPR = zeros(size(thresholds));
+    FPR = zeros(size(thresholds));
+    for i = 1:length(thresholds)
+        threshold = thresholds(i);
+        predicted_classes = predictions(1, :) >= threshold; 
+        
+        TP = sum((predicted_classes == 1) & (Testing_Labels == 1)); 
+        FP = sum((predicted_classes == 1) & (Testing_Labels == 0)); 
+        FN = sum((predicted_classes == 0) & (Testing_Labels == 1)); 
+        TN = sum((predicted_classes == 0) & (Testing_Labels == 0)); 
+        
+        TPR(i) = TP / (TP + FN);
+        FPR(i) = FP / (FP + TN);
+    end
+    
+    % Plot ROC Curve
+    figure;
+    plot(FPR, TPR, '-o', 'LineWidth', 2);
+    xlabel('False Positive Rate');
+    ylabel('True Positive Rate');
+    title(sprintf('ROC Curve for User %02d', user_id));
+    grid on;
+    
+    % Calculate AUC
+    AUC = trapz(FPR, TPR); 
+    AUCs = [AUCs; AUC];
+    fprintf('AUC for User %02d: %.4f\n', user_id, AUC);
+    
+    % 3. Calculate EER
+    FNR = 1 - TPR; 
+    EER_Index = find(abs(FPR - FNR) == min(abs(FPR - FNR)), 1);
+    EER = (FPR(EER_Index) + FNR(EER_Index)) / 2;
+    EERs = [EERs; EER];
+    fprintf('EER for User %02d: %.4f\n', user_id, EER);
+    
+    % Add EER point to ROC curve
+    hold on;
+    plot(FPR(EER_Index), TPR(EER_Index), 'rx', 'MarkerSize', 10, 'LineWidth', 2);
+    legend('ROC Curve', sprintf('EER = %.4f', EER));
+end
+
+% Display Overall Metrics
+fprintf('\nOverall Accuracy across Users: %.2f%%\n', mean(overall_accuracy));
+fprintf('Average EER across Users: %.4f\n', mean(EERs));
+fprintf('Average AUC across Users: %.4f\n', mean(AUCs));
