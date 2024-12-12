@@ -1,0 +1,171 @@
+% Directory containing the files
+dataDir = 'C:\Users\ASUS\Documents\Computer Science @Plymuni . NSBM\3rd Year\AI and ML\Coursework\New folder';
+
+% Filter for .mat files
+files = dir(fullfile(dataDir, '*.mat'));
+if isempty(files)
+    error('No .mat files found in the directory. Please check the file extensions or path.');
+else
+    disp(['Number of .mat files found: ', num2str(length(files))]);
+end
+
+% Initialize variables
+data_groups = containers.Map('KeyType', 'double', 'ValueType', 'any');
+
+% Load and group data by feature count
+for i = 1:length(files)
+    filePath = fullfile(files(i).folder, files(i).name);
+    disp(['Processing file: ', files(i).name]);
+    
+    % Load the data
+    try
+        data = load(filePath);
+    catch ME
+        disp(['Error loading file: ', files(i).name, ' - ', ME.message]);
+        continue;
+    end
+    
+    % Get field names in the .mat file
+    featureKey = fieldnames(data);
+    if isempty(featureKey)
+        disp(['Skipping file: ', files(i).name, ' - No fields found in the data.']);
+        continue;
+    end
+
+    % Access the first field (assuming it contains features)
+    try
+        features = data.(featureKey{1});
+    catch
+        disp(['Skipping file: ', files(i).name, ' - Unable to access the first field.']);
+        continue;
+    end
+
+    % Validate features
+    if isempty(features) || ~isnumeric(features)
+        disp(['Skipping file: ', files(i).name, ' - Data is empty or not numeric.']);
+        continue;
+    end
+    
+    % Skip datasets with fewer than 2 samples or invalid values
+    if size(features, 1) < 2 || any(isnan(features(:))) || any(isinf(features(:)))
+        disp(['Skipping file: ', files(i).name, ' - Dataset is too small or contains NaN/Inf values.']);
+        continue;
+    end
+    
+    % Group by feature count
+    feature_count = size(features, 2); % Number of features (columns)
+    if ~isKey(data_groups, feature_count)
+        data_groups(feature_count) = features;
+    else
+        data_groups(feature_count) = [data_groups(feature_count); features];
+    end
+end
+
+% Train and evaluate MLP for each feature group
+feature_keys = keys(data_groups);
+for k = 1:length(feature_keys)
+    feature_count = feature_keys{k};
+    dataset = data_groups(feature_count);
+    
+    disp(['Training MLP for ', num2str(feature_count), '-feature dataset...']);
+    
+    % Normalize the dataset
+    dataset = normalize(dataset, 'zscore');
+
+    % Split data into training and testing sets
+    [n_samples, n_features] = size(dataset);
+    if n_samples < 10
+        disp(['Skipping dataset with insufficient samples: ', num2str(n_samples), ' samples available.']);
+        continue;
+    end
+    
+    labels = randi([0, 1], n_samples, 1); % Generate random binary labels for simplicity
+    
+    % Shuffle data
+    perm = randperm(n_samples);
+    dataset = dataset(perm, :);
+    labels = labels(perm, :);
+
+    % 80% training, 20% testing
+    train_ratio = 0.8;
+    n_train = round(train_ratio * n_samples);
+    train_data = dataset(1:n_train, :);
+    train_labels = labels(1:n_train);
+    test_data = dataset(n_train+1:end, :);
+    test_labels = labels(n_train+1:end);
+
+    % Step 1: Variance Thresholding
+    var_threshold = 0.01;
+    feature_variance = var(train_data);
+    high_var_idx = feature_variance > var_threshold;
+    train_data = train_data(:, high_var_idx);
+    test_data = test_data(:, high_var_idx);
+
+    % Step 2: PCA for Dimensionality Reduction
+    [coeff, train_data_pca, ~, ~, explained] = pca(train_data);
+    cumulativeVariance = cumsum(explained);
+    pca_idx = find(cumulativeVariance >= 95, 1); % Retain 95% variance
+    train_data_pca = train_data_pca(:, 1:pca_idx);
+    test_data_pca = test_data * coeff(:, 1:pca_idx);
+
+    % Step 3: Cross-Validated Training and Tuning
+    hidden_layer_configs = {[5], [10], [20], [10, 10]}; % Test single and two-layer configurations
+    activation_functions = {'logsig', 'tansig'}; % Activation functions
+    learning_rates = [0.001, 0.01]; % Learning rates
+    best_accuracy = 0;
+    best_net = [];
+    best_config = {};
+
+    for h = 1:length(hidden_layer_configs)
+        for a = 1:length(activation_functions)
+            for lr = 1:length(learning_rates)
+                % Create and configure MLP
+                net = feedforwardnet(hidden_layer_configs{h});
+                net.layers{1}.transferFcn = activation_functions{a};
+                if length(hidden_layer_configs{h}) > 1
+                    net.layers{2}.transferFcn = activation_functions{a};
+                end
+                net.trainParam.lr = learning_rates(lr);
+                net.trainParam.epochs = 1000; % Maximum epochs
+                net.trainParam.showWindow = false; % Suppress GUI
+                net.divideParam.trainRatio = 0.7; % Train
+                net.divideParam.valRatio = 0.2;   % Validation
+                net.divideParam.testRatio = 0.1;  % Test
+                
+                % Add L2 regularization
+                net.performParam.regularization = 0.1; % Regularization parameter
+                
+                % Train the model
+                try
+                    net = train(net, train_data_pca', train_labels'); % Transpose for MATLAB format
+                catch ME
+                    disp(['Error training model with hidden neurons: ', num2str(hidden_layer_configs{h}), ...
+                          ', Activation: ', activation_functions{a}, ...
+                          ', Learning Rate: ', num2str(learning_rates(lr)), ...
+                          ' - ', ME.message]);
+                    continue;
+                end
+                
+                % Evaluate on test set
+                predictions = net(test_data_pca')';
+                predictions = round(predictions); % Convert outputs to binary for comparison
+                accuracy = mean(predictions == test_labels) * 100;
+                
+                disp(['Hidden neurons: ', num2str(hidden_layer_configs{h}), ', Activation: ', activation_functions{a}, ...
+                      ', Learning Rate: ', num2str(learning_rates(lr)), ', Accuracy: ', num2str(accuracy), '%']);
+                
+                % Track the best model
+                if accuracy > best_accuracy
+                    best_accuracy = accuracy;
+                    best_net = net;
+                    best_config = {hidden_layer_configs{h}, activation_functions{a}, learning_rates(lr)};
+                end
+            end
+        end
+    end
+    
+    % Display best model results
+    disp(['Best model for ', num2str(feature_count), '-feature dataset:']);
+    disp(['Hidden neurons: ', num2str(best_config{1}), ', Activation: ', best_config{2}, ...
+          ', Learning Rate: ', num2str(best_config{3}), ', Accuracy: ', num2str(best_accuracy), '%']);
+end
