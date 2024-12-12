@@ -1,0 +1,117 @@
+% Define the folder path where the .mat files are located
+folderPath = 'C:\Users\User\Documents\CW-Data';
+
+% Define the folder path for saving the graphs
+outputFolder = fullfile(folderPath, 'Graphs');
+if ~isfolder(outputFolder)
+    mkdir(outputFolder);
+end
+
+% Get a list of all .mat files in the folder
+fileList = dir(fullfile(folderPath, '*.mat'));
+
+% Display number of files found
+disp(['Number of .mat files found: ', num2str(length(fileList))]);
+if isempty(fileList)
+    error('No .mat files found in the folder.');
+end
+
+% Initialize a structure to store intra-variance results for each file
+intraVarianceResults = struct();
+
+% Loop through each .mat file
+for i = 1:length(fileList)
+    % Get the full path to the .mat file
+    filePath = fullfile(fileList(i).folder, fileList(i).name);
+    disp(['Processing file: ', fileList(i).name]);
+    
+    % Load the .mat file
+    try
+        data = load(filePath);
+    catch ME
+        warning(['Error loading file: ', fileList(i).name, ' - ', ME.message]);
+        continue;
+    end
+    
+    % Automatically identify variable names
+    varNames = fieldnames(data);
+    disp(['Variables found in file: ', strjoin(varNames, ', ')]);
+    
+    % Identify the variable that contains features
+    featuresVar = [];
+    for v = 1:length(varNames)
+        currentVar = data.(varNames{v});
+        % Check if the variable is a numeric matrix (potential feature data)
+        if isnumeric(currentVar) && ndims(currentVar) == 2
+            featuresVar = currentVar;
+            break;
+        end
+    end
+    
+    % Warn if no valid feature matrix is found
+    if isempty(featuresVar)
+        warning(['No numeric matrix found in ', fileList(i).name, '. Skipping this file.']);
+        continue;
+    end
+    
+    % Extract features
+    features = featuresVar; % Rows = samples, Columns = features
+    disp(['Feature matrix size: ', num2str(size(features))]);
+    
+    % Intra-variance computation
+    % Calculate variance across samples for each feature
+    featureVariance = var(features, 0, 1); % Variance along the rows (dim 1)
+    
+    % Additional intra-variance metrics
+    meanVariance = mean(featureVariance);       % Mean of feature-wise variances
+    medianVariance = median(featureVariance);   % Median of feature-wise variances
+    stdVariance = std(featureVariance);         % Standard deviation of feature variances
+    varianceRange = max(featureVariance) - min(featureVariance); % Range of feature variances
+    
+    % Sanitize file name for use as a valid field name
+    sanitizedFileName = matlab.lang.makeValidName(fileList(i).name);
+    
+    % Store results using the sanitized file name
+    intraVarianceResults.(sanitizedFileName) = struct( ...
+        'FeatureVariance', featureVariance, ...
+        'MeanVariance', meanVariance, ...
+        'MedianVariance', medianVariance, ...
+        'StdVariance', stdVariance, ...
+        'VarianceRange', varianceRange ...
+    );
+    
+    % Display summary of results for the current file
+    disp(['Results for ', fileList(i).name, ':']);
+    disp(['Mean Variance: ', num2str(meanVariance)]);
+    disp(['Median Variance: ', num2str(medianVariance)]);
+    disp(['Standard Deviation of Variances: ', num2str(stdVariance)]);
+    disp(['Variance Range: ', num2str(varianceRange)]);
+    
+    % --- Visualization ---
+    % Create a figure for feature-wise variance
+    figure;
+    plot(1:length(featureVariance), featureVariance, '-o', 'LineWidth', 1.5, 'MarkerSize', 6);
+    title(['Feature-Wise Variances for ', fileList(i).name], 'Interpreter', 'none');
+    xlabel('Feature Index');
+    ylabel('Variance');
+    grid on;
+    
+    % Annotate with additional metrics
+    annotation('textbox', [0.15, 0.8, 0.3, 0.1], 'String', ...
+        {['Mean Variance: ', num2str(meanVariance)], ...
+         ['Median Variance: ', num2str(medianVariance)], ...
+         ['Std Variance: ', num2str(stdVariance)], ...
+         ['Variance Range: ', num2str(varianceRange)]}, ...
+        'FitBoxToText', 'on', 'BackgroundColor', 'white');
+    
+    % Save the graph as a PNG file
+    saveas(gcf, fullfile(outputFolder, [sanitizedFileName, '.png']));
+    close(gcf); % Close the figure to save memory
+end
+
+% Save all results to a .mat file
+save('ComprehensiveIntraVarianceResults.mat', 'intraVarianceResults');
+
+% Display summary of results
+disp('Comprehensive intra-variance results have been calculated and saved to "ComprehensiveIntraVarianceResults.mat".');
+disp(['Graphs have been saved to the folder: ', outputFolder]);
