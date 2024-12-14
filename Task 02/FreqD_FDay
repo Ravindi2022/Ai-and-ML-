@@ -1,0 +1,153 @@
+% Define the base directory for the data files
+baseDir = 'C:\Users\ASUS\Documents\Computer Science @Plymuni . NSBM\3rd Year\AI and ML\Coursework\New folder'; 
+
+% List of specific files to process
+fileList = {
+    'U01_Acc_FreqD_FDay.mat';
+    'U02_Acc_FreqD_FDay.mat';
+    'U03_Acc_FreqD_FDay.mat';
+    'U04_Acc_FreqD_FDay.mat';
+    'U05_Acc_FreqD_FDay.mat';
+    'U06_Acc_FreqD_FDay.mat';
+    'U07_Acc_FreqD_FDay.mat';
+    'U08_Acc_FreqD_FDay.mat';
+    'U09_Acc_FreqD_FDay.mat';
+    'U10_Acc_FreqD_FDay.mat'
+};
+
+% Construct full file paths
+f_Names = fullfile(baseDir, fileList);
+
+% Initialize variables to hold the processed data
+a_Inputs = []; % Features (input data)
+a_Targets = []; % Targets (output data)
+
+% Loop through each file for processing
+for i = 1:length(f_Names)
+    fprintf('Processing file %d: %s\n', i, f_Names{i});
+
+    % Check if the file exists
+    if ~exist(f_Names{i}, 'file')
+        error('File not found: %s', f_Names{i});
+    end
+
+    % Load the data file
+    data = load(f_Names{i});
+
+    % Get the names of the variables from the loaded data
+    v_Names = fieldnames(data);
+
+    % Process each variable inside the file
+    for j = 1:length(v_Names)
+        v_Name = v_Names{j}; % Variable name
+        disp(['Variable: ', v_Name]);
+
+        % Get the variable's data
+        v_Data = data.(v_Name);
+
+        % Verify if the data is numerical
+        if isnumeric(v_Data)
+            % Handle missing values
+            if any(isnan(v_Data), 'all')
+                disp(['Missing values found in variable: ', v_Name]);
+                colMeans = nanmean(v_Data);
+                v_Data(isnan(v_Data)) = colMeans(isnan(v_Data)); % Fill missing values
+                disp(['Missing values in ', v_Name, ' have been filled.']);
+            else
+                disp(['No missing values in variable: ', v_Name]);
+            end
+
+            % Normalize data to the range [0, 1]
+            minVals = min(v_Data, [], 1);
+            maxVals = max(v_Data, [], 1);
+            rangeVals = maxVals - minVals;
+            rangeVals(rangeVals == 0) = 1; % Avoid division by zero
+            normalizedData = (v_Data - minVals) ./ rangeVals;
+
+            % Split into features and targets
+            features = normalizedData(:, 1:end-1);
+            targets = normalizedData(:, end);
+
+            % Append to global data lists
+            a_Inputs = [a_Inputs; features];
+            a_Targets = [a_Targets; targets];
+        else
+            disp(['Variable ', v_Name, ' is not numeric and will not be processed.']);
+        end
+    end
+end
+
+% Split data: 80% training, 20% testing
+cv = cvpartition(size(a_Inputs, 1), 'HoldOut', 0.2);
+trainInputs = a_Inputs(cv.training, :);
+trainTargets = a_Targets(cv.training);
+testInputs = a_Inputs(cv.test, :);
+testTargets = a_Targets(cv.test);
+
+% Determine and present the correlation matrix
+all_Data = [a_Inputs, a_Targets];
+corrMatrix = corr(all_Data);
+
+% Present a heatmap of the correlation matrix
+figure;
+heatmap(corrMatrix, 'Title', 'Correlation Matrix', 'XLabel', 'Features/Target', 'YLabel', 'Features/Target');
+
+% Define and train the neural network
+net = feedforwardnet(10);
+net.trainFcn = 'trainlm'; % Training function
+net.performFcn = 'mse';   % Performance function
+net.layers{1}.transferFcn = 'tansig'; % Activation function for the hidden layer
+
+% Train the network
+[net, tr] = train(net, trainInputs', trainTargets');
+
+% Plot the performance during training
+figure, plotperform(tr);
+
+% Test the network
+predictions = net(testInputs');
+
+% Reshape to column vectors if necessary
+testTargets = testTargets(:);
+predictions = predictions(:);
+
+% Display statistics for targets and predictions
+fprintf('\nStatistics for Actual Targets:\n');
+fprintf('Mean: %.4f\n', mean(testTargets));
+fprintf('Max: %.4f\n', max(testTargets));
+fprintf('Min: %.4f\n', min(testTargets));
+
+fprintf('\nStatistics for Predictions:\n');
+fprintf('Mean: %.4f\n', mean(predictions));
+fprintf('Max: %.4f\n', max(predictions));
+fprintf('Min: %.4f\n', min(predictions));
+
+% Evaluate performance
+if numel(unique(testTargets)) > 2 % Regression task
+    % Scatter plot for regression
+    figure;
+    scatter(testTargets, predictions);
+    xlabel('Actual Values');
+    ylabel('Predicted Values');
+    title('Regression: Actual vs Predicted');
+
+    % Compute RMSE for regression
+    rmse = sqrt(mean((predictions - testTargets).^2));
+    disp(['RMSE: ', num2str(rmse)]);
+
+    % Calculate accuracy
+    epsilon = 1e-6;
+    accuracy = mean(abs((predictions - testTargets) ./ (testTargets + epsilon)) < 0.1);
+    disp(['Overall User Classification Accuracy: ', num2str(accuracy * 100), '%']);
+else
+    % Classification task
+    % Convert predictions to binary labels
+    predictedLabels = double(predictions > 0.5);
+
+    % Plot confusion matrix
+    figure, plotconfusion(testTargets', predictedLabels');
+
+    % Compute classification accuracy
+    accuracy = sum(predictedLabels == testTargets) / length(testTargets);
+    disp(['Classification Accuracy: ', num2str(accuracy * 100), '%']);
+end
